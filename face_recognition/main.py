@@ -44,33 +44,34 @@ def predict_faces_in_frame(frame, model, mtcnn, label_map, device):
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(frame_rgb)
     
+    # Detect faces and get bounding boxes
     boxes, _ = mtcnn.detect(pil_img)
-    faces = []
+    predictions = []
     
     if boxes is not None:
         for box in boxes:
-            face = mtcnn(pil_img)
-            if face is not None:
-                face = face.to(device)
-                faces.append((face, box))
-    
-    predictions = []
-    if faces:
-        with torch.no_grad():
-            for face, box in faces:
-                output = model(face)
-                _, predicted = torch.max(output.data, 1)
-                predicted_id = predicted.item()
-                predicted_name = label_map[predicted_id]
-                predictions.append((predicted_name, box))
+            # Extract individual face using MTCNN
+            face = mtcnn.extract(pil_img, [box], None)
+            if face is not None and len(face) > 0:
+                face = face[0].to(device)  # Take the first (and only) face
+                face = face.unsqueeze(0)   # Add batch dimension: [1, 3, 160, 160]
+                
+                # Predict identity for this face
+                with torch.no_grad():
+                    output = model(face)
+                    _, predicted = torch.max(output.data, 1)
+                    predicted_id = predicted.item()
+                    predicted_name = label_map[predicted_id]
+                    predictions.append((predicted_name, box))
     
     return predictions
 
-def main(video_source):
+def main(video_source, use_gui=True):
     """Main function for real-time face recognition."""
     # Paths and configurations
     dataset_path = "C:/Users/Rochan/Desktop/Coding/Student_Surveillance/face_recognition/Data"
     model_path = "best_model.pth"
+    output_video_path = "output.mp4"
 
     # Load label map
     label_map, num_classes = load_label_map(dataset_path)
@@ -96,7 +97,11 @@ def main(video_source):
     if not cap.isOpened():
         raise RuntimeError("Error: Could not open video capture.")
     
-    print("Starting video capture. Press 'q' to quit.")
+    # Initialize video writer
+    height, width, _ = cap.read()[1].shape
+    out = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), 20.0, (width, height))
+    
+    print("Starting video capture. Press 'q' to quit if using GUI.")
     
     while True:
         ret, frame = cap.read()
@@ -114,33 +119,39 @@ def main(video_source):
             cv2.putText(frame, predicted_name, (x1, y1-10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
         
-        # Display the frame
-        cv2.imshow('Face Recognition', frame)
+        # Write frame to output video
+        out.write(frame)
         
-        # Break loop on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # Display the frame if using GUI
+        if use_gui:
+            cv2.imshow('Face Recognition', frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
     # Release resources
     cap.release()
-    cv2.destroyAllWindows()
-    print("Video capture stopped.")
+    out.release()
+    if use_gui:
+        cv2.destroyAllWindows()
+    print("Video capture stopped. Output saved to", output_video_path)
 
 if __name__ == "__main__":
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Real-time face recognition system.")
     parser.add_argument('--video-source', type=str, default='0',
                         help="Video source: '0' for webcam, or path to video file.")
+    parser.add_argument('--no-gui', action='store_true',
+                        help="Disable GUI display and only save output to video file.")
     args = parser.parse_args()
 
     # Handle video source argument
     try:
-        video_source = int(args.video_source)  # Try to convert to int (for webcam)
+        video_source = int(args.video_source)
     except ValueError:
-        video_source = args.video_source  # Use as file path if not an integer
+        video_source = args.video_source
 
     # Run the main function
     try:
-        main(video_source)
+        main(video_source, use_gui=not args.no_gui)
     except Exception as e:
         print(f"An error occurred: {e}")
